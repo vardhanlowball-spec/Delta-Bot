@@ -18,8 +18,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Config from environment ───────────────────────────────────────
-API_KEY    = os.environ['f6BUYVXY83IlXpR8JU7haR4lfehWtS']
-API_SECRET = os.environ['O6eWRAWZMtzwgwXvmXyKwIuiqjT2gVuVkjOFByAUXvOXLdnJHvicrz87eBVL']
+API_KEY    = os.environ['DELTA_API_KEY']
+API_SECRET = os.environ['DELTA_API_SECRET']
 
 SYMBOL         = os.getenv('SYMBOL', 'ETHUSD')          # ETH/USDT Perpetual on Delta India
 TIMEFRAME      = os.getenv('TIMEFRAME', '5')             # 5-minute candles

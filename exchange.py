@@ -1,143 +1,127 @@
+"""
+exchange.py — Delta Exchange India REST client
+Fixes:
+  • Correct HMAC-SHA256 signature for v2 API
+  • Proper headers including timestamp + signature
+  • No DeltaRestClient dependency (pure requests)
+"""
+
 import hashlib
 import hmac
 import time
+import os
 import requests
-import logging
 
-logger = logging.getLogger(__name__)
+API_KEY    = os.getenv("DELTA_API_KEY", "").strip()
+API_SECRET = os.getenv("DELTA_API_SECRET", "").strip()
+BASE_URL   = "https://api.india.delta.exchange"
 
-BASE_URL = "https://api.india.delta.exchange"
 
-class DeltaClient:
-    def __init__(self, api_key: str, api_secret: str):
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Content-Type': 'application/json',
-            'User-Agent': 'kyle-ribbon-bot/1.0'
-        })
+def _sign(method: str, path: str, query: str, body: str) -> dict:
+    """Build signed headers for Delta Exchange v2."""
+    timestamp = str(int(time.time()))
+    # Signature payload: method + timestamp + path + query_string + body
+    payload = method + timestamp + path + (("?" + query) if query else "") + body
+    signature = hmac.new(
+        API_SECRET.encode(), payload.encode(), hashlib.sha256
+    ).hexdigest()
+    return {
+        "api-key":       API_KEY,
+        "timestamp":     timestamp,
+        "signature":     signature,
+        "Content-Type":  "application/json",
+        "Accept":        "application/json",
+    }
 
-    def _sign(self, method: str, path: str, query: str = '', payload: str = '') -> dict:
-        timestamp = str(int(time.time()))
-        message = method + timestamp + path + query + payload
-        signature = hmac.new(
-            self.api_secret.encode(),
-            message.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        return {
-            'api-key': self.api_key,
-            'timestamp': timestamp,
-            'signature': signature
-        }
 
-    def _get(self, path: str, params: dict = None, auth: bool = False) -> dict:
-        query = ''
-        if params:
-            query = '?' + '&'.join(f"{k}={v}" for k, v in params.items())
-        headers = self._sign('GET', path, query) if auth else {}
-        url = BASE_URL + path + query
-        resp = self.session.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
+def get(path: str, params: dict = None) -> dict:
+    query = "&".join(f"{k}={v}" for k, v in (params or {}).items())
+    headers = _sign("GET", path, query, "")
+    url = BASE_URL + path + (("?" + query) if query else "")
+    resp = requests.get(url, headers=headers, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
 
-    def _post(self, path: str, body: dict) -> dict:
-        import json
-        payload = json.dumps(body)
-        headers = self._sign('POST', path, '', payload)
-        url = BASE_URL + path
-        resp = self.session.post(url, headers=headers, data=payload, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
 
-    def _delete(self, path: str, body: dict) -> dict:
-        import json
-        payload = json.dumps(body)
-        headers = self._sign('DELETE', path, '', payload)
-        url = BASE_URL + path
-        resp = self.session.delete(url, headers=headers, data=payload, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
+def post(path: str, body: dict) -> dict:
+    import json
+    body_str = json.dumps(body, separators=(",", ":"))
+    headers = _sign("POST", path, "", body_str)
+    resp = requests.post(BASE_URL + path, headers=headers, data=body_str, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
 
-    # ── Market Data ──────────────────────────────────────────────
-    def get_candles(self, symbol: str, resolution: str = '5', limit: int = 100):
-        """Fetch OHLCV candles. resolution in minutes: 1,5,15,60,D"""
-        end = int(time.time())
-        start = end - (limit * int(resolution) * 60)
-        data = self._get('/v2/history/candles', {
-            'symbol': symbol,
-            'resolution': resolution,
-            'start': start,
-            'end': end
-        })
-        if data.get('success'):
-            return data['result']
-        return []
 
-    def get_ticker(self, symbol: str) -> dict:
-        data = self._get(f'/v2/tickers/{symbol}')
-        if data.get('success'):
-            return data['result']
-        return {}
+def delete(path: str, body: dict) -> dict:
+    import json
+    body_str = json.dumps(body, separators=(",", ":"))
+    headers = _sign("DELETE", path, "", body_str)
+    resp = requests.delete(BASE_URL + path, headers=headers, data=body_str, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
 
-    def get_product(self, symbol: str) -> dict:
-        data = self._get('/v2/products', {'contract_types': 'perpetual_futures'})
-        if data.get('success'):
-            for p in data['result']:
-                if p['symbol'] == symbol:
-                    return p
-        return {}
 
-    # ── Account ──────────────────────────────────────────────────
-    def get_balance(self) -> dict:
-        data = self._get('/v2/wallet/balances', auth=True)
-        if data.get('success'):
-            return {b['asset_symbol']: float(b['available_balance'])
-                    for b in data['result']}
-        return {}
+# ── Public helpers ──────────────────────────────────────────────────────────
 
-    def get_positions(self) -> list:
-        data = self._get('/v2/positions/margined', auth=True)
-        if data.get('success'):
-            return data['result']
-        return []
+def get_products() -> list:
+    """All perpetual futures products."""
+    r = requests.get(BASE_URL + "/v2/products", timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    return [p for p in data.get("result", []) if p.get("contract_type") == "perpetual_futures"]
 
-    def get_open_orders(self, product_id: int) -> list:
-        data = self._get('/v2/orders', {'product_id': product_id, 'state': 'open'}, auth=True)
-        if data.get('success'):
-            return data['result']
-        return []
 
-    # ── Trading ──────────────────────────────────────────────────
-    def place_market_order(self, product_id: int, side: str, size: int) -> dict:
-        """side: 'buy' or 'sell', size: number of contracts"""
-        body = {
-            'product_id': product_id,
-            'side': side,
-            'order_type': 'market_order',
-            'size': size
-        }
-        data = self._post('/v2/orders', body)
-        return data
+def get_ticker(symbol: str) -> dict:
+    r = requests.get(BASE_URL + f"/v2/tickers/{symbol}", timeout=10)
+    r.raise_for_status()
+    return r.json().get("result", {})
 
-    def place_limit_order(self, product_id: int, side: str, size: int, price: float) -> dict:
-        body = {
-            'product_id': product_id,
-            'side': side,
-            'order_type': 'limit_order',
-            'size': size,
-            'limit_price': str(price)
-        }
-        data = self._post('/v2/orders', body)
-        return data
 
-    def cancel_all_orders(self, product_id: int) -> dict:
-        body = {'product_id': product_id, 'cancel_limit_orders': True}
-        return self._delete('/v2/orders/all', body)
+def get_candles(symbol: str, resolution: str = "5", count: int = 100) -> list:
+    """Fetch OHLCV candles. resolution in minutes as string."""
+    end   = int(time.time())
+    start = end - int(resolution) * 60 * count
+    r = requests.get(
+        BASE_URL + "/v2/history/candles",
+        params={"resolution": resolution, "symbol": symbol, "start": start, "end": end},
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json().get("result", [])
 
-    def close_position(self, product_id: int, current_size: int, current_side: str) -> dict:
-        """Close an open position with a market order in opposite direction"""
-        close_side = 'sell' if current_side == 'buy' else 'buy'
-        return self.place_market_order(product_id, close_side, abs(current_size))
 
+def get_wallet_balance() -> float:
+    """Returns available INR balance."""
+    data = get("/v2/wallet/balances")
+    for b in data.get("result", []):
+        if b.get("asset_symbol") == "INR":
+            return float(b.get("available_balance", 0))
+    return 0.0
+
+
+def get_positions() -> list:
+    data = get("/v2/positions/margined")
+    return data.get("result", [])
+
+
+def place_order(symbol: str, side: str, size: int, order_type: str = "market_order",
+                limit_price: float = None, reduce_only: bool = False) -> dict:
+    body = {
+        "product_symbol": symbol,
+        "size":           size,
+        "side":           side,            # "buy" or "sell"
+        "order_type":     order_type,
+        "reduce_only":    reduce_only,
+    }
+    if limit_price:
+        body["limit_price"] = str(limit_price)
+    return post("/v2/orders", body)
+
+
+def cancel_order(order_id: int, product_id: int) -> dict:
+    return delete("/v2/orders", {"id": order_id, "product_id": product_id})
+
+
+def get_open_orders() -> list:
+    data = get("/v2/orders", {"state": "open"})
+    return data.get("result", [])

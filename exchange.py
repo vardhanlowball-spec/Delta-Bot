@@ -1,5 +1,7 @@
 """
-exchange.py — Delta Exchange India REST client (auth fixed)
+exchange.py — Delta Exchange India (auth fixed per official docs)
+Signature: method + timestamp + path + query_string + body
+User-Agent header required to avoid 4xx errors.
 """
 
 import hashlib
@@ -14,17 +16,14 @@ API_SECRET = os.getenv("DELTA_API_SECRET", "").strip()
 BASE_URL   = "https://api.india.delta.exchange"
 
 
-def _sign(method: str, path: str, body: str = "") -> dict:
-    """
-    Delta Exchange signature format:
-      payload = method + timestamp + path + body
-    No query string in the signature.
-    """
+def _sign(method: str, path: str, query_string: str = "", body: str = "") -> dict:
     timestamp = str(int(time.time()))
-    payload   = method + timestamp + path + body
+    # Official format: method + timestamp + path + query_string + body
+    # query_string must include the '?' e.g. "?product_id=1&state=open"
+    message   = method + timestamp + path + query_string + body
     signature = hmac.new(
         API_SECRET.encode("utf-8"),
-        payload.encode("utf-8"),
+        message.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
     return {
@@ -32,12 +31,15 @@ def _sign(method: str, path: str, body: str = "") -> dict:
         "timestamp":    timestamp,
         "signature":    signature,
         "Content-Type": "application/json",
-        "Accept":       "application/json",
+        "User-Agent":   "python-rest-client",   # required by Delta
     }
 
 
 def get(path: str, params: dict = None) -> dict:
-    headers = _sign("GET", path)
+    query_string = ""
+    if params:
+        query_string = "?" + "&".join(f"{k}={v}" for k, v in params.items())
+    headers = _sign("GET", path, query_string)
     resp = requests.get(BASE_URL + path, headers=headers, params=params, timeout=10)
     resp.raise_for_status()
     return resp.json()
@@ -45,7 +47,7 @@ def get(path: str, params: dict = None) -> dict:
 
 def post(path: str, body: dict) -> dict:
     body_str = json.dumps(body, separators=(",", ":"))
-    headers  = _sign("POST", path, body_str)
+    headers  = _sign("POST", path, "", body_str)
     resp = requests.post(BASE_URL + path, headers=headers, data=body_str, timeout=10)
     resp.raise_for_status()
     return resp.json()
@@ -53,7 +55,7 @@ def post(path: str, body: dict) -> dict:
 
 def delete(path: str, body: dict) -> dict:
     body_str = json.dumps(body, separators=(",", ":"))
-    headers  = _sign("DELETE", path, body_str)
+    headers  = _sign("DELETE", path, "", body_str)
     resp = requests.delete(BASE_URL + path, headers=headers, data=body_str, timeout=10)
     resp.raise_for_status()
     return resp.json()
@@ -62,14 +64,16 @@ def delete(path: str, body: dict) -> dict:
 # ── Public helpers ───────────────────────────────────────────────────────────
 
 def get_products() -> list:
-    r = requests.get(BASE_URL + "/v2/products", timeout=10)
+    r = requests.get(BASE_URL + "/v2/products",
+                     headers={"User-Agent": "python-rest-client"}, timeout=10)
     r.raise_for_status()
     return [p for p in r.json().get("result", [])
             if p.get("contract_type") == "perpetual_futures"]
 
 
 def get_ticker(symbol: str) -> dict:
-    r = requests.get(BASE_URL + f"/v2/tickers/{symbol}", timeout=10)
+    r = requests.get(BASE_URL + f"/v2/tickers/{symbol}",
+                     headers={"User-Agent": "python-rest-client"}, timeout=10)
     r.raise_for_status()
     return r.json().get("result", {})
 
@@ -77,10 +81,12 @@ def get_ticker(symbol: str) -> dict:
 def get_candles(symbol: str, resolution: str = "5", count: int = 60) -> list:
     end   = int(time.time())
     start = end - int(resolution) * 60 * count
-    r = requests.get(BASE_URL + "/v2/history/candles",
-                     params={"resolution": resolution, "symbol": symbol,
-                             "start": start, "end": end},
-                     timeout=10)
+    r = requests.get(
+        BASE_URL + "/v2/history/candles",
+        headers={"User-Agent": "python-rest-client"},
+        params={"resolution": resolution, "symbol": symbol, "start": start, "end": end},
+        timeout=10,
+    )
     r.raise_for_status()
     return r.json().get("result", [])
 
